@@ -1,8 +1,10 @@
 const DATA_URL = "./data/leaderboard.json";
+const TRAFFIC_REFRESH_MS = 30_000;
 
 let runsViewApi = null;
 let runBreakdownModalApi = null;
 const runPayloadCache = new Map();
+let trafficIntervalId = null;
 
 function esc(value) {
   return String(value ?? "")
@@ -137,6 +139,132 @@ function weightedMean(items) {
 
 function uniqueSorted(values) {
   return Array.from(new Set(values.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function fmtInt(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
+  return Number(value).toLocaleString();
+}
+
+function setTrafficStatus(message, kind = "info") {
+  const node = document.getElementById("trafficStatus");
+  if (!node) return;
+  node.classList.remove("traffic-status-error");
+  if (kind === "error") node.classList.add("traffic-status-error");
+  node.textContent = message;
+}
+
+function setTrafficValue(id, value) {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.textContent = value;
+}
+
+function resolveGoatcounterBase(rawCode) {
+  const raw = String(rawCode || "").trim();
+  if (!raw) return null;
+
+  const withoutCount = raw.replace(/\/count\/?$/i, "").replace(/\/+$/, "");
+  if (/^https?:\/\//i.test(withoutCount)) {
+    return withoutCount;
+  }
+  if (/\.goatcounter\.com$/i.test(withoutCount)) {
+    return `https://${withoutCount}`;
+  }
+  return `https://${withoutCount}.goatcounter.com`;
+}
+
+function getGoatcounterBase() {
+  const bodyCode = document.body?.dataset?.goatcounterCode;
+  const windowCode = window?.LEADERBOARD_ANALYTICS?.goatcounterCode;
+  return resolveGoatcounterBase(windowCode || bodyCode || "");
+}
+
+function ensureGoatcounterScript(base) {
+  return new Promise((resolve, reject) => {
+    const endpoint = `${base}/count`;
+    const existing = document.querySelector('script[src*="gc.zgo.at/count.js"]');
+    if (existing) {
+      if (!existing.dataset.goatcounter) {
+        existing.dataset.goatcounter = endpoint;
+      }
+      resolve();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "https://gc.zgo.at/count.js";
+    script.dataset.goatcounter = endpoint;
+    script.addEventListener("load", () => resolve());
+    script.addEventListener("error", () => reject(new Error("Failed to load goatcounter count.js")));
+    document.head.appendChild(script);
+  });
+}
+
+function currentGoatPath() {
+  try {
+    const goatData = window?.goatcounter?.get_data?.();
+    if (goatData && goatData.p) return String(goatData.p);
+  } catch (err) {
+    // Ignore and use pathname fallback.
+  }
+  return window.location.pathname || "/";
+}
+
+async function fetchGoatCount(base, path, params = {}) {
+  const url = new URL(`${base}/counter/${encodeURIComponent(path)}.json`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== null && v !== undefined && v !== "") {
+      url.searchParams.set(k, String(v));
+    }
+  }
+  const response = await fetch(url.toString(), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  const count = Number(payload?.count);
+  return Number.isFinite(count) ? count : null;
+}
+
+function isoDateDaysAgo(days) {
+  const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return date.toISOString().slice(0, 10);
+}
+
+async function refreshTraffic(base) {
+  const total = await fetchGoatCount(base, "TOTAL");
+  const page = await fetchGoatCount(base, currentGoatPath());
+  const last30 = await fetchGoatCount(base, "TOTAL", { start: isoDateDaysAgo(30) });
+
+  setTrafficValue("trafficTotal", fmtInt(total));
+  setTrafficValue("trafficPage", fmtInt(page));
+  setTrafficValue("trafficMonth", fmtInt(last30));
+  setTrafficStatus(`Last updated: ${new Date().toLocaleTimeString()}`);
+}
+
+async function initTraffic() {
+  const base = getGoatcounterBase();
+  if (!base) {
+    setTrafficStatus("Analytics disabled. Set data-goatcounter-code on <body> to enable.");
+    return;
+  }
+
+  setTrafficStatus("Loading live traffic ...");
+  try {
+    await ensureGoatcounterScript(base);
+    await refreshTraffic(base);
+
+    if (trafficIntervalId) clearInterval(trafficIntervalId);
+    trafficIntervalId = window.setInterval(() => {
+      void refreshTraffic(base).catch((err) => {
+        setTrafficStatus(`Traffic refresh failed: ${err.message}`, "error");
+      });
+    }, TRAFFIC_REFRESH_MS);
+  } catch (err) {
+    setTrafficStatus(`Traffic init failed: ${err.message}`, "error");
+  }
 }
 
 function setModelJudgerNote(judgers) {
@@ -1181,6 +1309,7 @@ function renderLeaderboards(data) {
 }
 
 async function init() {
+  void initTraffic();
   try {
     const response = await fetch(DATA_URL);
     if (!response.ok) {

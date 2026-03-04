@@ -228,6 +228,49 @@ h3 {
   font-size: 20px;
 }
 
+.traffic-inline {
+  margin: -4px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #284665;
+  border-radius: 10px;
+  background: rgba(14, 34, 54, 0.6);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.traffic-inline .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9ec1de;
+  font-family: "IBM Plex Mono", monospace;
+  padding-right: 4px;
+}
+
+.traffic-inline .item {
+  font-size: 12px;
+  color: #bfd5e8;
+}
+
+.traffic-inline .item strong {
+  font-family: "IBM Plex Mono", monospace;
+  color: #e6f4ff;
+  font-weight: 600;
+}
+
+#trafficStatus {
+  font-size: 12px;
+  margin-left: auto;
+  color: #9ab6cf;
+}
+
+#trafficStatus.traffic-status-error {
+  color: var(--bad);
+}
+
 .dual-grid {
   display: grid;
   gap: 14px;
@@ -659,6 +702,15 @@ body.modal-open {
 
   .sample-merged-grid {
     grid-template-columns: 1fr;
+  }
+
+  .traffic-inline {
+    gap: 6px 10px;
+  }
+
+  #trafficStatus {
+    margin-left: 0;
+    width: 100%;
   }
 
   #overviewCards .overview-row-primary,

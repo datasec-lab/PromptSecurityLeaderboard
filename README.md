@@ -33,6 +33,26 @@ Open:
 
 `http://localhost:8080/leaderboard_site/`
 
+## Live traffic counter (GoatCounter)
+
+The page includes a live traffic row (Total / This Page / Last 30 Days).
+
+Configure in `leaderboard_site/index.html`:
+
+```html
+<body data-goatcounter-code="your-goatcounter-code">
+```
+
+Examples:
+
+- `data-goatcounter-code="promptsecurityeval"`
+- `data-goatcounter-code="https://promptsecurityeval.goatcounter.com"`
+
+Notes:
+
+- The site auto-loads GoatCounter `count.js` and refreshes counters every 30s.
+- If counters fail, check GoatCounter site settings for visitor count visibility/API access.
+
 ## Private main repo -> public leaderboard repo (one-click)
 
 Workflow file:
