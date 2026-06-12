@@ -9,16 +9,8 @@ From repo root:
 ```bash
 python leaderboard_site/scripts/build_leaderboard_data.py \
   --input-dir experiments/placeholders \
+  --utility-input-dir experiments/placeholders_utility \
   --output leaderboard_site/data/leaderboard.json
-```
-
-For static hosting (GitHub Pages), bundle completed run payload JSONs too:
-
-```bash
-python leaderboard_site/scripts/build_leaderboard_data.py \
-  --input-dir experiments/placeholders \
-  --output leaderboard_site/data/leaderboard.json \
-  --bundle-runs-dir leaderboard_site/data/runs
 ```
 
 ## 2) Serve locally
@@ -90,15 +82,27 @@ PAT recommendation:
 1. Push to `main` (auto trigger), or
 2. GitHub -> Actions -> `Publish Leaderboard To Public Repo` -> `Run workflow`.
 
-The workflow rebuilds `leaderboard_site/` and force-publishes it as an orphan commit to the target branch.
+The workflow rebuilds `leaderboard_site/`, bundles only paper-compatible run payloads into `leaderboard_site/data/runs/` for the comparison popup, and publishes the static site to the target branch.
 
 ## Data assumptions
 
-- Reads only completed-like runs (`success`, `completed`, `complete`).
+- Reads paper-compatible placeholders with primary GPT-bin scores; status is used only to choose the best duplicate for the same paper key.
+- Schema `v3` includes a paper-compatible `paper` block for default site tables.
+- The default generated JSON is aggregate-only: `meta`, `overview`, and `paper`.
+- Public publishing uses `--bundle-runs-dir` to include only paper-compatible run-level payloads needed by the comparison popup.
+- The default leaderboard is restricted to the paper main experiment:
+  - 11 configured target models.
+  - 20 configured attack settings.
+  - 9 configured defenses, with `no_defense` used only as a matched baseline.
+  - HarmBench-style GPT-4.1-mini judger (`gpt_judger_harmful_binary`) as the primary harmful-output judger.
+- Auxiliary runs such as `no_attack` baselines are retained only for derived metrics; ABJ assistant-LLM ablations and other non-main attack variants are excluded from leaderboard rankings.
+- Leaderboard ASR uses only `gpt_judger_harmful_binary`.
+- HarmBench, HarmBench-style GPT-4.1-mini, and prefix judger results are exposed as independent comparison views; they are not averaged together.
 - `ASR` is derived from sample-level judger outputs:
   - `0` means safe.
   - `1` means unsafe.
-  - multi-judger dict/list values are averaged to `[0,1]`.
-- Matrix prefers `no_defense` runs; if missing, it falls back to all-defense averages.
-- With `--bundle-runs-dir`, run payload files are copied and run paths are rewritten to `data/runs/*.json`.
-- Publishing this site means run payload data is publicly accessible in the target repo Pages site.
+- Model rankings use no-defense ASR and matched clean-baseline transition metrics.
+- Defense rankings use matched no-defense counterfactuals on shared sample identifiers.
+- Attack and defense rankings are split by black-box-compatible and white-box-only method access.
+- Utility deltas are read from `experiments/placeholders_utility` when available.
+- Headline matrices do not fill missing no-defense cells from defended runs.

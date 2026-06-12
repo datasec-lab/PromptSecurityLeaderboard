@@ -1,5 +1,11 @@
-const DATA_URL = "./data/leaderboard.json";
+const DATA_URL = "./data/leaderboard.json?v=20260612-paper-clean-6";
 const TRAFFIC_REFRESH_MS = 30_000;
+const DEFAULT_JUDGER_KEY = "gpt_judger_harmful_binary";
+const JUDGER_LABELS = {
+  harmbench_judger: "HarmBench",
+  gpt_judger_harmful_binary: "HarmBench-style Judger (GPT-4.1 mini)",
+  rejection_prefix_judger: "Prefix Judger",
+};
 
 let runsViewApi = null;
 let runBreakdownModalApi = null;
@@ -20,11 +26,35 @@ function fmtPct(value, digits = 1) {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function fmtPp(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "N/A";
+  const scaled = value * 100;
+  const sign = scaled > 0 ? "+" : "";
+  return `${sign}${scaled.toFixed(digits)} pp`;
+}
+
+function fmtFloat(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "N/A";
+  return Number(value).toFixed(digits);
+}
+
+function fmtSec(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "N/A";
+  return `${Number(value).toFixed(1)}s`;
+}
+
 function asrClass(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return "";
   if (value <= 0.2) return "good";
   if (value <= 0.45) return "warn";
   return "bad";
+}
+
+function deltaClass(value, positiveIsGood = true) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "";
+  if (value === 0) return "warn";
+  const good = positiveIsGood ? value > 0 : value < 0;
+  return good ? "good" : "bad";
 }
 
 function inferModelType(modelName) {
@@ -146,6 +176,10 @@ function fmtInt(value) {
   return Number(value).toLocaleString();
 }
 
+function judgerLabel(key) {
+  return JUDGER_LABELS[key] || String(key || "N/A");
+}
+
 function setTrafficStatus(message, kind = "info") {
   const node = document.getElementById("trafficStatus");
   if (!node) return;
@@ -259,71 +293,102 @@ async function initTraffic() {
     if (trafficIntervalId) clearInterval(trafficIntervalId);
     trafficIntervalId = window.setInterval(() => {
       void refreshTraffic(base).catch((err) => {
-        setTrafficStatus(`Traffic refresh failed: ${err.message}`, "error");
+        setTrafficStatus(
+          "Traffic refresh failed. Enable GoatCounter setting 'allow using the visitor counter' and check ad-blockers.",
+          "error"
+        );
       });
     }, TRAFFIC_REFRESH_MS);
   } catch (err) {
-    setTrafficStatus(`Traffic init failed: ${err.message}`, "error");
+    setTrafficStatus(
+      "Traffic init failed. Enable GoatCounter setting 'allow using the visitor counter' and check ad-blockers.",
+      "error"
+    );
   }
 }
 
-function setModelJudgerNote(judgers) {
+function setModelJudgerNote(primaryJudger) {
   const node = document.getElementById("modelJudgerNote");
   if (!node) return;
-  const parts = uniqueSorted(
-    (judgers || [])
-      .flatMap((j) => String(j || "").split("+"))
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
-  if (!parts.length) {
-    node.textContent = "Default judgers: N/A.";
+  if (!primaryJudger) {
+    node.textContent = "Leaderboard ASR judger: N/A.";
     return;
   }
-  node.innerHTML = `Default judgers: ${parts.map((p) => `<code>${esc(p)}</code>`).join(", ")}.`;
+  node.innerHTML = `Leaderboard ASR judger: <code>${esc(judgerLabel(primaryJudger))}</code>.`;
 }
 
 function setMeta(meta) {
-  document.getElementById("metaGeneratedAt").textContent = meta.generated_at || "-";
-  document.getElementById("metaSource").textContent = meta.source || "-";
-  document.getElementById("metaSchema").textContent = meta.schema_version || "-";
+  const generated = document.getElementById("metaGeneratedAt");
+  const source = document.getElementById("metaSource");
+  const schema = document.getElementById("metaSchema");
+  if (generated) generated.textContent = meta.generated_at || "-";
+  if (source) source.textContent = meta.source || "-";
+  if (schema) schema.textContent = meta.schema_version || "-";
 }
 
-function renderOverview(overview, modelRows, defenseRows, attackRows) {
-  const modelNames = Array.isArray(overview?.models) ? overview.models : modelRows.map((r) => r.model).filter(Boolean);
-  const apiModelCount = modelNames.filter((m) => inferModelType(m) === "api").length;
-  const localModelCount = modelNames.filter((m) => inferModelType(m) === "local").length;
-  const topApiModel = modelRows.find((r) => inferModelType(r.model) === "api")?.model || "N/A";
-  const topLocalModel = modelRows.find((r) => inferModelType(r.model) === "local")?.model || "N/A";
+function renderOverview(overview, modelRows, defenseRows, attackRows, paper) {
+  const blackModel = modelRows.find((r) => r.access === "black-box" || (!r.access && inferModelType(r.model) === "api"));
+  const whiteModel = modelRows.find((r) => r.access === "white-box" || (!r.access && inferModelType(r.model) === "local"));
+  const blackAttack = paper?.attacks_by_access?.black_box?.[0] || attackRows.find((r) => r.access === "black-box");
+  const whiteAttack = paper?.attacks_by_access?.white_box?.[0] || attackRows.find((r) => r.access === "white-box-only");
+  const defense = defenseRows[0];
 
-  const primaryCards = [
-    { label: "Completed Runs", value: overview.run_count },
-    { label: "Sample Completion", value: fmtPct(overview.sample_completion_rate) },
-    { label: "Models (Total)", value: overview.model_count },
-    { label: "Models (API)", value: apiModelCount },
-    { label: "Models (Local)", value: localModelCount },
-    { label: "Attacks", value: overview.attack_count },
-    { label: "Defenses", value: overview.defense_count },
+  const cards = [
+    {
+      label: "Best Black-Box Model",
+      value: blackModel?.model || "N/A",
+      metric: `No-defense ASR ${fmtPct(blackModel?.no_defense_asr ?? blackModel?.avg_asr)}; robustness ${fmtPct(
+        blackModel?.robustness_score
+      )}`,
+    },
+    {
+      label: "Best White-Box Model",
+      value: whiteModel?.model || "N/A",
+      metric: `No-defense ASR ${fmtPct(whiteModel?.no_defense_asr ?? whiteModel?.avg_asr)}; robustness ${fmtPct(
+        whiteModel?.robustness_score
+      )}`,
+    },
+    {
+      label: "Best Black-Box Attack",
+      value: blackAttack?.attack || "N/A",
+      metric: `Residual ASR ${fmtPct(blackAttack?.residual_defended_asr)}; no-defense ASR ${fmtPct(
+        blackAttack?.no_defense_asr ?? blackAttack?.avg_asr
+      )}`,
+    },
+    {
+      label: "Best White-Box Attack",
+      value: whiteAttack?.attack || "N/A",
+      metric: `Residual ASR ${fmtPct(whiteAttack?.residual_defended_asr)}; no-defense ASR ${fmtPct(
+        whiteAttack?.no_defense_asr ?? whiteAttack?.avg_asr
+      )}`,
+    },
+    {
+      label: "Best Defense",
+      value: defense?.defense || "N/A",
+      metric: `Defense gain ${fmtPp(defense?.gain ?? defense?.asr_gain_vs_no_defense)}; defended ASR ${fmtPct(
+        defense?.defended_asr ?? defense?.avg_asr
+      )}`,
+    },
   ];
-  const highlightCards = [
-    { label: "Top API Model (Robustness)", value: topApiModel, text: true },
-    { label: "Top Local Model (Robustness)", value: topLocalModel, text: true },
-    { label: "Best Defense Gain", value: fmtPct(defenseRows[0]?.asr_gain_vs_no_defense) },
-    { label: "Hardest Attack", value: attackRows[0]?.attack || "N/A", text: true },
-  ];
-
-  const renderCard = (card) => {
-    const cls = card.text ? "card card-text" : "card";
-    return `<article class="${cls}"><span class="label">${esc(card.label)}</span><span class="value">${esc(
-      card.value
-    )}</span></article>`;
-  };
 
   const container = document.getElementById("overviewCards");
-  container.innerHTML = `
-    <div class="overview-row overview-row-primary">${primaryCards.map(renderCard).join("")}</div>
-    <div class="overview-row overview-row-highlights">${highlightCards.map(renderCard).join("")}</div>
-  `;
+  if (container) {
+    container.innerHTML = cards
+      .map(
+        (card) =>
+          `<article class="card overview-card"><span class="label">${esc(card.label)}</span><span class="value">${esc(
+            card.value
+          )}</span><span class="metric">${esc(card.metric)}</span></article>`
+      )
+      .join("");
+  }
+
+  const footnote = document.getElementById("overviewFootnote");
+  if (footnote) {
+    footnote.innerHTML = `Footnote: leaderboard ASR metrics use only <code>${esc(
+      paper?.policy?.primary_judger_label || judgerLabel(DEFAULT_JUDGER_KEY)
+    )}</code>. HarmBench and Prefix Judger are exposed as independent comparison views below.`;
+  }
 }
 
 function renderTable(tableId, columns, rows, rowClick) {
@@ -388,25 +453,32 @@ function renderModelAttackMatrix(matrix) {
     return;
   }
 
-  const head = `<thead><tr><th>Model</th>${attacks.map((a) => `<th>${esc(a)}</th>`).join("")}</tr></thead>`;
+  const blackAttackCount = matrix?.column_groups?.black_box_attacks ?? attacks.length;
+  const blackModelCount = matrix?.row_groups?.black_box_models ?? rows.length;
+  const head = `<thead><tr><th>Model</th>${attacks
+    .map((a, idx) => `<th class="${idx === blackAttackCount ? "matrix-divider-left" : ""}">${esc(a)}</th>`)
+    .join("")}</tr></thead>`;
 
   const body = `<tbody>${rows
-    .map((row) => {
+    .map((row, rowIdx) => {
       const cells = (row.cells || [])
-        .map((cell) => {
+        .map((cell, cellIdx) => {
+          const dividerClass = cellIdx === blackAttackCount ? "matrix-divider-left" : "";
           if (cell.asr === null || cell.asr === undefined) {
-            return `<td title="No run">-</td>`;
+            return `<td class="${dividerClass}" title="No run">-</td>`;
           }
           const ratio = (cell.asr - min) / span;
           const hue = Math.max(0, 140 - ratio * 140);
           const bg = `hsl(${hue}deg 70% 38%)`;
           const sourceTag = cell.source === "no_defense" ? "" : " *";
-          return `<td style="background:${bg}" title="ASR=${fmtPct(
+          return `<td class="${dividerClass}" style="background:${bg}" title="ASR=${fmtPct(
             cell.asr
           )}, source=${esc(cell.source)}, runs=${cell.run_count}">${fmtPct(cell.asr, 1)}${sourceTag}</td>`;
         })
         .join("");
-      return `<tr><td class="first-col">${esc(row.model)}</td>${cells}</tr>`;
+      return `<tr class="${rowIdx === blackModelCount ? "matrix-divider-top" : ""}"><td class="first-col">${esc(
+        row.model
+      )}</td>${cells}</tr>`;
     })
     .join("")}</tbody>`;
 
@@ -418,44 +490,79 @@ function renderAttackDefenseMatrix(matrix) {
   const legend = document.getElementById("attackDefenseMatrixLegend");
   if (!table || !legend || !matrix) return;
 
-  const min = matrix?.range?.min_asr ?? 0;
-  const max = matrix?.range?.max_asr ?? 1;
+  const isGain = matrix.metric === "defense_gain";
+  const min = isGain ? (matrix?.range?.min_gain ?? -0.2) : (matrix?.range?.min_asr ?? 0);
+  const max = isGain ? (matrix?.range?.max_gain ?? 0.5) : (matrix?.range?.max_asr ?? 1);
   const span = Math.max(max - min, 1e-6);
-  setMatrixLegend(legend);
+  if (isGain) {
+    legend.innerHTML =
+      '<div class="swatch swatch-gain"></div><span>Backfire</span><span style="margin-left:auto">Higher ASR reduction</span>';
+  } else {
+    setMatrixLegend(legend);
+  }
 
+  const attacks = Array.isArray(matrix.attacks) ? matrix.attacks : [];
   const defenses = Array.isArray(matrix.defenses) ? matrix.defenses : [];
   const rows = Array.isArray(matrix.rows) ? matrix.rows : [];
-  if (!defenses.length || !rows.length) {
+  if (!attacks.length || !defenses.length || !rows.length) {
     table.innerHTML = '<tbody><tr><td class="empty">No matrix data</td></tr></tbody>';
     return;
   }
 
-  const head = `<thead><tr><th>Attack</th>${defenses.map((d) => `<th>${esc(d)}</th>`).join("")}</tr></thead>`;
+  const blackAttackCount = matrix?.column_groups?.black_box_attacks ?? attacks.length;
+  const blackDefenseCount = matrix?.row_groups?.black_box_defenses ?? defenses.length;
+  const head = `<thead><tr><th>Defense</th>${attacks
+    .map((a, idx) => `<th class="${idx === blackAttackCount ? "matrix-divider-left" : ""}">${esc(a)}</th>`)
+    .join("")}</tr></thead>`;
   const body = `<tbody>${rows
-    .map((row) => {
+    .map((row, rowIdx) => {
       const cells = (row.cells || [])
-        .map((cell) => {
-          if (cell.asr === null || cell.asr === undefined) {
-            return '<td title="No run">-</td>';
+        .map((cell, cellIdx) => {
+          const value = isGain ? cell.gain : cell.asr;
+          if (value === null || value === undefined) {
+            return `<td class="${cellIdx === blackAttackCount ? "matrix-divider-left" : ""}" title="No run">-</td>`;
           }
-          const ratio = (cell.asr - min) / span;
-          const hue = Math.max(0, 140 - ratio * 140);
+          const ratio = (value - min) / span;
+          const hue = isGain ? Math.max(8, Math.min(155, 8 + ratio * 147)) : Math.max(0, 140 - ratio * 140);
           const bg = `hsl(${hue}deg 70% 38%)`;
-          return `<td style="background:${bg}" title="ASR=${fmtPct(cell.asr)}, runs=${cell.run_count}, models=${
-            cell.model_coverage ?? 0
-          }, judged=${cell.judged_samples ?? 0}">${fmtPct(cell.asr, 1)}</td>`;
+          const label = isGain ? fmtPp(value, 0) : fmtPct(value, 1);
+          const title = isGain
+            ? `Defense Gain=${fmtPp(value)}, residual ASR=${fmtPct(cell.asr)}, runs=${cell.run_count}, models=${
+                cell.model_coverage ?? 0
+              }, judged=${cell.judged_samples ?? 0}`
+            : `ASR=${fmtPct(cell.asr)}, runs=${cell.run_count}, models=${cell.model_coverage ?? 0}, judged=${
+                cell.judged_samples ?? 0
+              }`;
+          return `<td class="${cellIdx === blackAttackCount ? "matrix-divider-left" : ""}" style="background:${bg}" title="${esc(
+            title
+          )}">${esc(label)}</td>`;
         })
         .join("");
-      return `<tr><td class="first-col">${esc(row.attack)}</td>${cells}</tr>`;
+      return `<tr class="${rowIdx === blackDefenseCount ? "matrix-divider-top" : ""}"><td class="first-col">${esc(
+        row.defense
+      )}</td>${cells}</tr>`;
     })
     .join("")}</tbody>`;
 
   table.innerHTML = `${head}${body}`;
 }
 
-function fillSelect(selectId, values) {
+function fillSelect(selectId, values, options = {}) {
   const select = document.getElementById(selectId);
-  select.innerHTML = `<option value="">All</option>${values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("")}`;
+  if (!select) return;
+  const cleanValues = Array.isArray(values) ? values : [];
+  const includeAll = options.includeAll !== false;
+  const optionHtml = cleanValues
+    .map((v) => {
+      const value = typeof v === "object" && v !== null ? v.key : v;
+      const label = typeof v === "object" && v !== null ? v.label || v.key : v;
+      return `<option value="${esc(value)}">${esc(label)}</option>`;
+    })
+    .join("");
+  select.innerHTML = `${includeAll ? '<option value="">All</option>' : ""}${optionHtml}`;
+  if (options.defaultValue && Array.from(select.options).some((opt) => opt.value === options.defaultValue)) {
+    select.value = options.defaultValue;
+  }
 }
 
 function pickFirst(sample, keys) {
@@ -511,7 +618,7 @@ function simpleValueSummary(value) {
   return String(value);
 }
 
-function extractSampleView(sample) {
+function extractSampleView(sample, selectedJudgerKey = DEFAULT_JUDGER_KEY) {
   const cleanPrompt = pickFirst(sample, ["clean_prompt", "prompt_on_clean", "original_prompt"]);
   const attackedPrompt = pickFirst(sample, ["attacked_prompt", "prompt_on_attacked", "jailbreak_prompt"]);
   const defendedPrompt = pickFirst(sample, ["attacked_prompt_under_defense", "defended_prompt"]);
@@ -522,7 +629,12 @@ function extractSampleView(sample) {
   const responseAttackedUnderDefense = pickFirst(sample, ["llm_response_on_attacked_under_defense"]);
   const responsePrimary = pickFirst(sample, ["llm_response", "response"]);
 
-  const judgerOverall = pickFirst(sample, [
+  const judgerIndividual = sample.judger_individual_results;
+  const selectedJudger =
+    judgerIndividual && typeof judgerIndividual === "object" && selectedJudgerKey in judgerIndividual
+      ? judgerIndividual[selectedJudgerKey]
+      : null;
+  const judgerOverall = selectedJudger ?? pickFirst(sample, [
     "judger_result_on_attack_under_defense",
     "judger_result_on_attack",
     "judger_result",
@@ -543,12 +655,13 @@ function extractSampleView(sample) {
     responseAttackedUnderDefense,
     responsePrimary,
     responseType: sample.response_type,
+    selectedJudgerKey,
     judgerOverall,
     judgerOnClean: sample.judger_result_on_clean,
     judgerOnAttack: sample.judger_result_on_attack,
     judgerOnCleanUnderDefense: sample.judger_result_on_clean_under_defense,
     judgerOnAttackUnderDefense: sample.judger_result_on_attack_under_defense,
-    judgerIndividual: sample.judger_individual_results,
+    judgerIndividual,
     judgerContext: sample.judger_context,
     attackQueries: sample.attack_query_count,
     attackRuntime: sample.attack_runtime,
@@ -594,12 +707,13 @@ function renderModalSummaryCards(container, payload, sampleViews) {
   const defenseFallbackCount = sampleViews.filter((s) => s.defenseFallback === true).length;
   const judgerFallbackCount = sampleViews.filter((s) => s.judgerFallback === true).length;
   const errorCount = sampleViews.filter((s) => !!s.sampleError).length;
+  const selectedJudgerKey = sampleViews.find((s) => s.selectedJudgerKey)?.selectedJudgerKey || DEFAULT_JUDGER_KEY;
 
   const cards = [
     { label: "Samples", value: sampleCount },
-    { label: "Overall ASR", value: fmtPct(avgOverall) },
+    { label: "Selected Judger ASR", value: fmtPct(avgOverall) },
+    { label: "Judger", value: judgerLabel(selectedJudgerKey) },
     { label: "Completion", value: fmtPct(completion) },
-    { label: "Status", value: payload?.status || "-" },
     { label: "Success / Total", value: `${payload?.successful_samples ?? "-"}/${payload?.total_samples ?? sampleCount}` },
     { label: "Attack Success Rate", value: fmtPct(toNum(payload?.attack_success_rate)) },
     { label: "Clean Safe Rate", value: fmtPct(toNum(payload?.clean_safe_rate)) },
@@ -652,7 +766,6 @@ function renderModalMetaTable(table, payload, sampleViews, samples) {
     : payload?.judger_name || "-";
   const cfg = payload?.config && typeof payload.config === "object" ? payload.config : {};
   const responseTypes = uniqueSorted(sampleViews.map((s) => s.responseType).filter(Boolean));
-  const statusReasons = uniqueSorted(sampleViews.map((s) => s.statusReason).filter(Boolean));
   const dependencies = Array.isArray(payload?.dependencies) ? payload.dependencies : [];
 
   const rows = [
@@ -672,7 +785,6 @@ function renderModalMetaTable(table, payload, sampleViews, samples) {
     ["Seed", cfg.seed ?? "-"],
     ["Dependency Count", dependencies.length],
     ["Response Types", responseTypes.length ? responseTypes.join(", ") : "-"],
-    ["Status Reasons", statusReasons.length ? statusReasons.join(", ") : "-"],
     ["Created Time", payload?.created_time || "-"],
     ["Last Updated", payload?.last_updated || "-"],
     ["config.model", cfg.model ?? "-"],
@@ -693,11 +805,10 @@ function renderModalMergedSamplesHeader(container) {
   if (!container) return;
   container.innerHTML = `<div class="sample-merged-grid sample-merged-grid--header">
     <span>Sample</span>
-    <span>Status</span>
     <span>Clean Prompt</span>
     <span>Attacked Prompt</span>
     <span>Evaluated Response</span>
-    <span>Overall Judger</span>
+    <span>Selected Judger</span>
     <span>Individual Judgers</span>
   </div>`;
 }
@@ -705,7 +816,6 @@ function renderModalMergedSamplesHeader(container) {
 function renderSampleItem(item) {
   const overallScore = normalizeScore(item.judgerOverall);
   const scoreClass = asrClass(overallScore);
-  const statusText = item.status || "unknown";
   const sampleId = item.sampleIndex ?? "?";
   const evaluatedResponse =
     item.responseAttackedUnderDefense || item.responseAttacked || item.responsePrimary || item.responseCleanUnderDefense || item.responseClean;
@@ -719,8 +829,7 @@ function renderSampleItem(item) {
 
   const badges = [
     `<span class="sample-badge">sample=${esc(sampleId)}</span>`,
-    `<span class="sample-badge">status=${esc(statusText)}</span>`,
-    `<span class="sample-badge ${scoreClass}">overall=${esc(fmtPct(overallScore))}</span>`,
+    `<span class="sample-badge ${scoreClass}">${esc(judgerLabel(item.selectedJudgerKey))}=${esc(fmtPct(overallScore))}</span>`,
     item.attackQueries !== null && item.attackQueries !== undefined
       ? `<span class="sample-badge">queries=${esc(item.attackQueries)}</span>`
       : "",
@@ -769,7 +878,6 @@ function renderSampleItem(item) {
     <summary class="sample-merged-summary">
       <div class="sample-merged-grid">
         <span class="mono">${esc(sampleId)}</span>
-        <span>${esc(statusText)}</span>
         <span title="${esc(item.cleanPrompt || "-")}">${esc(shortText(item.cleanPrompt, 180))}</span>
         <span title="${esc(item.attackedPrompt || "-")}">${esc(shortText(item.attackedPrompt, 180))}</span>
         <span title="${esc(evaluatedResponse || "-")}">${esc(shortText(evaluatedResponse, 180))}</span>
@@ -909,16 +1017,27 @@ function setupRunBreakdownModal() {
   };
 }
 
-function buildRunScope(filteredRuns) {
+function runJudgerMetric(row, judgerKey = DEFAULT_JUDGER_KEY) {
+  const key = judgerKey || DEFAULT_JUDGER_KEY;
+  const metric = row?.judger_scores?.[key];
+  return {
+    asr: metric?.asr ?? (key === DEFAULT_JUDGER_KEY ? row?.asr : null),
+    judgedSamples: metric?.judged_samples ?? (key === DEFAULT_JUDGER_KEY ? row?.judged_samples : 0),
+    label: metric?.label || judgerLabel(key),
+  };
+}
+
+function buildRunScope(filteredRuns, judgerKey = DEFAULT_JUDGER_KEY) {
   const modelSet = uniqueSorted(filteredRuns.map((r) => r.model));
   const attackSet = uniqueSorted(filteredRuns.map((r) => r.attack));
   const defenseSet = uniqueSorted(filteredRuns.map((r) => r.defense));
 
-  const judgedSamples = filteredRuns.reduce((acc, r) => acc + (r.judged_samples || 0), 0);
+  const metrics = filteredRuns.map((r) => runJudgerMetric(r, judgerKey));
+  const judgedSamples = metrics.reduce((acc, m) => acc + (m.judgedSamples || 0), 0);
   const totalSamples = filteredRuns.reduce((acc, r) => acc + (r.total_samples || 0), 0);
   const successfulSamples = filteredRuns.reduce((acc, r) => acc + (r.successful_samples || 0), 0);
 
-  const weightedAsr = weightedMean(filteredRuns.map((r) => [r.asr, Math.max(r.judged_samples || 0, 1)]));
+  const weightedAsr = weightedMean(metrics.map((m) => [m.asr, Math.max(m.judgedSamples || 0, 1)]));
   const completion = totalSamples > 0 ? successfulSamples / totalSamples : null;
 
   return {
@@ -930,12 +1049,14 @@ function buildRunScope(filteredRuns) {
     totalSamples,
     completion,
     weightedAsr,
+    judgerLabel: judgerLabel(judgerKey),
   };
 }
 
 function renderRunScope(scope) {
   const cards = [
     { label: "Filtered Runs", value: scope.runCount },
+    { label: "Judger", value: scope.judgerLabel },
     { label: "Weighted ASR", value: fmtPct(scope.weightedAsr) },
     { label: "Judged Samples", value: scope.judgedSamples.toLocaleString() },
     { label: "Sample Completion", value: fmtPct(scope.completion) },
@@ -1001,20 +1122,25 @@ function focusRunsByEntity(entityType, value) {
 }
 
 function renderRunsSection(dataset) {
-  fillSelect("filterModel", dataset.filters.models);
-  fillSelect("filterAttack", dataset.filters.attacks);
-  fillSelect("filterDefense", dataset.filters.defenses);
-  fillSelect("filterDataset", dataset.filters.datasets);
-  fillSelect("filterJudger", dataset.filters.judgers);
+  const query = dataset?.paper?.query || {};
+  const queryRuns = Array.isArray(query.runs) ? query.runs : [];
+  const filters = query.filters || {};
+  const section = document.getElementById("runsSection");
+  if (!section) return;
+
+  fillSelect("filterModel", filters.models);
+  fillSelect("filterAttack", filters.attacks);
+  fillSelect("filterDefense", filters.defenses);
+  fillSelect("filterJudger", filters.judgers, { includeAll: false, defaultValue: DEFAULT_JUDGER_KEY });
 
   const controls = [
     "filterModel",
     "filterAttack",
     "filterDefense",
-    "filterDataset",
+    "filterSample",
     "filterJudger",
     "filterSearch",
-  ].map((id) => document.getElementById(id));
+  ].map((id) => document.getElementById(id)).filter(Boolean);
 
   let activeRunToken = 0;
 
@@ -1023,20 +1149,19 @@ function renderRunsSection(dataset) {
       model: document.getElementById("filterModel").value,
       attack: document.getElementById("filterAttack").value,
       defense: document.getElementById("filterDefense").value,
-      datasetName: document.getElementById("filterDataset").value,
-      judger: document.getElementById("filterJudger").value,
+      sample: document.getElementById("filterSample").value.trim(),
+      judger: document.getElementById("filterJudger").value || DEFAULT_JUDGER_KEY,
       search: document.getElementById("filterSearch").value.trim().toLowerCase(),
     };
   }
 
   function filterRuns() {
     const f = currentFilters();
-    return dataset.runs
+    return queryRuns
       .filter((r) => !f.model || r.model === f.model)
       .filter((r) => !f.attack || r.attack === f.attack)
       .filter((r) => !f.defense || r.defense === f.defense)
-      .filter((r) => !f.datasetName || r.dataset === f.datasetName)
-      .filter((r) => !f.judger || r.judger === f.judger)
+      .filter((r) => runJudgerMetric(r, f.judger).asr !== null)
       .filter((r) => {
         if (!f.search) return true;
         return (
@@ -1044,14 +1169,14 @@ function renderRunsSection(dataset) {
           r.attack.toLowerCase().includes(f.search) ||
           r.defense.toLowerCase().includes(f.search) ||
           r.dataset.toLowerCase().includes(f.search) ||
-          r.judger.toLowerCase().includes(f.search)
+          judgerLabel(f.judger).toLowerCase().includes(f.search)
         );
       })
       .sort((a, b) => {
-        const asrA = a.asr ?? -1;
-        const asrB = b.asr ?? -1;
+        const asrA = runJudgerMetric(a, f.judger).asr ?? -1;
+        const asrB = runJudgerMetric(b, f.judger).asr ?? -1;
         if (asrA !== asrB) return asrB - asrA;
-        return (b.created_time || 0) - (a.created_time || 0);
+        return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
       });
   }
 
@@ -1066,7 +1191,11 @@ function renderRunsSection(dataset) {
       if (token !== activeRunToken) return;
 
       const samples = Array.isArray(payload.sample_results) ? payload.sample_results : [];
-      const sampleViews = samples.map(extractSampleView);
+      const sampleFilter = currentFilters().sample;
+      const selectedJudger = currentFilters().judger || DEFAULT_JUDGER_KEY;
+      const sampleViews = samples
+        .map((sample) => extractSampleView(sample, selectedJudger))
+        .filter((sample) => !sampleFilter || String(sample.sampleIndex) === sampleFilter);
       if (runBreakdownModalApi) {
         runBreakdownModalApi.showData(row, payload, sampleViews);
       }
@@ -1079,8 +1208,9 @@ function renderRunsSection(dataset) {
   }
 
   function paint() {
+    const f = currentFilters();
     const filtered = filterRuns();
-    const scope = buildRunScope(filtered);
+    const scope = buildRunScope(filtered, f.judger);
     renderRunScope(scope);
 
     renderTable(
@@ -1089,8 +1219,19 @@ function renderRunsSection(dataset) {
         { label: "Model", key: "model" },
         { label: "Attack", key: "attack" },
         { label: "Defense", key: "defense" },
-        { label: "ASR", html: true, render: (r) => `<span class="${asrClass(r.asr)}">${fmtPct(r.asr)}</span>` },
-        { label: "Judged", key: "judged_samples", className: "mono" },
+        {
+          label: "ASR",
+          html: true,
+          render: (r) => {
+            const value = runJudgerMetric(r, f.judger).asr;
+            return `<span class="${asrClass(value)}">${fmtPct(value)}</span>`;
+          },
+        },
+        {
+          label: "Judged",
+          html: true,
+          render: (r) => `<span class="mono">${esc(runJudgerMetric(r, f.judger).judgedSamples)}</span>`,
+        },
         {
           label: "Sample Completion",
           html: true,
@@ -1098,7 +1239,7 @@ function renderRunsSection(dataset) {
         },
         { label: "Total", key: "total_samples", className: "mono" },
         { label: "Dataset", key: "dataset" },
-        { label: "Judger", key: "judger" },
+        { label: "Judger", html: true, render: () => esc(judgerLabel(f.judger)) },
         { label: "Updated", key: "updated_at", className: "mono" },
       ],
       filtered,
@@ -1118,6 +1259,7 @@ function renderRunsSection(dataset) {
       const modelEl = document.getElementById("filterModel");
       const attackEl = document.getElementById("filterAttack");
       const defenseEl = document.getElementById("filterDefense");
+      const sampleEl = document.getElementById("filterSample");
       const searchEl = document.getElementById("filterSearch");
 
       if (entityType === "model") {
@@ -1134,48 +1276,79 @@ function renderRunsSection(dataset) {
         defenseEl.value = value || "";
       }
 
+      sampleEl.value = "";
       searchEl.value = "";
       paint();
-
-      const section = document.getElementById("runsSection");
-      if (section) {
-        section.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
+      section.scrollIntoView({ behavior: "smooth", block: "start" });
     },
   };
 }
 
 function renderLeaderboards(data) {
-  const modelRows = sortByRobustnessDesc(data.leaderboards.models || []);
-  const apiModels = withSubRank(modelRows.filter((row) => inferModelType(row.model) === "api"));
-  const localModels = withSubRank(modelRows.filter((row) => inferModelType(row.model) === "local"));
+  const paper = data.paper || {};
+  const modelRows = [...(paper.models || [])].sort((a, b) => {
+    const av = a.no_defense_asr ?? a.avg_asr;
+    const bv = b.no_defense_asr ?? b.avg_asr;
+    if ((av === null || av === undefined) !== (bv === null || bv === undefined)) return av === null || av === undefined ? 1 : -1;
+    if (av !== bv) return av - bv;
+    return String(a.model || "").localeCompare(String(b.model || ""));
+  });
+  const apiModels = withSubRank(
+    modelRows.filter((row) => row.access === "black-box" || (!row.access && inferModelType(row.model) === "api"))
+  );
+  const localModels = withSubRank(
+    modelRows.filter((row) => row.access === "white-box" || (!row.access && inferModelType(row.model) === "local"))
+  );
 
   const modelColumns = [
     { label: "Rank", key: "sub_rank", className: "mono" },
     { label: "Model", key: "model" },
     {
-      label: "Robustness",
+      label: "No-Def ASR",
       html: true,
       render: (r) => {
-        const hint = `Robustness = 1 - Avg ASR. Avg ASR=${fmtPct(r.avg_asr)}; judged_samples=${r.judged_samples || 0}.`;
-        return metricHint(fmtPct(r.robustness_score), hint, asrClass(r.avg_asr));
+        const value = r.no_defense_asr ?? r.avg_asr;
+        return metricHint(fmtPct(value), `Attack success rate against the undefended target model. judged_samples=${fmtInt(r.judged_samples)}.`, asrClass(value));
       },
     },
     {
-      label: "No-Attack Robustness",
+      label: "Clean ASR",
       html: true,
       render: (r) => {
-        const robust =
-          r.no_attack_robustness !== null && r.no_attack_robustness !== undefined
-            ? r.no_attack_robustness
-            : r.no_attack_unsafe_rate !== null && r.no_attack_unsafe_rate !== undefined
-              ? 1 - r.no_attack_unsafe_rate
-              : null;
-        const hint = `No-attack robustness = 1 - no-attack ASR. baseline_runs=${r.no_attack_run_count || 0}; baseline_judged_samples=${
-          r.no_attack_judged_samples || 0
-        }.`;
-        return metricHint(fmtPct(robust), hint, asrClass(1 - (robust ?? 1)));
+        const value = r.clean_asr ?? r.no_attack_unsafe_rate;
+        return metricHint(fmtPct(value), "No-attack harmful-query baseline.", asrClass(value));
       },
+    },
+    {
+      label: "ASR Lift",
+      html: true,
+      render: (r) => metricHint(fmtPp(r.asr_lift), "No-defense ASR minus clean ASR.", deltaClass(-(r.asr_lift ?? 0), true)),
+    },
+    {
+      label: "Induced Harmfulness",
+      html: true,
+      render: (r) =>
+        metricHint(
+          fmtPct(r.induced_harmfulness),
+          `Clean-safe to attacked-harmful transition on matched sample identifiers. samples=${fmtInt(r.transition_samples)}.`,
+          asrClass(r.induced_harmfulness)
+        ),
+    },
+    {
+      label: "Suppression",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPct(r.attack_suppression), "Clean-harmful to attacked-safe transition; high values can indicate failed attack execution."),
+    },
+    {
+      label: "Strongest Attack",
+      html: true,
+      render: (r) =>
+        r.strongest_attack
+          ? `<span title="No-defense ASR=${esc(fmtPct(r.strongest_attack_asr))}">${esc(r.strongest_attack)} <span class="${asrClass(
+              r.strongest_attack_asr
+            )}">${esc(fmtPct(r.strongest_attack_asr, 0))}</span></span>`
+          : "N/A",
     },
     {
       label: "Attacks",
@@ -1188,18 +1361,14 @@ function renderLeaderboards(data) {
       render: (r) => metricHint(String(r.defense_coverage), `Unique defenses evaluated for this model: ${r.defense_coverage}.`, "mono"),
     },
     {
-      label: "#Tests",
+      label: "Completion",
       html: true,
-      render: (r) => metricHint(String(r.run_count), `Completed attack runs for ranking: ${r.run_count}.`, "mono"),
+      render: (r) => metricHint(fmtPct(r.sample_completion_rate), `Completed no-defense samples across ${r.run_count} runs.`),
     },
     {
-      label: "Test Completion",
+      label: "Latency",
       html: true,
-      render: (r) =>
-        metricHint(
-          fmtPct(r.sample_completion_rate),
-          `Weighted sample completion across runs. successful/total samples aggregated by run.`
-        ),
+      render: (r) => metricHint(fmtSec(r.avg_latency_s), "Average target-model latency on no-defense attack runs."),
     },
   ];
 
@@ -1211,101 +1380,147 @@ function renderLeaderboards(data) {
     focusRunsByEntity("model", row.model);
   });
 
-  renderTable(
-    "defenseTable",
-    [
-      { label: "Rank", key: "rank", className: "mono" },
-      { label: "Defense", key: "defense" },
-      {
-        label: "Avg ASR",
-        html: true,
-        render: (r) =>
-          metricHint(
-            fmtPct(r.avg_asr),
-            `Defense-side ASR over matched pairs. matched_pairs=${r.matched_pair_count}; judged_samples=${r.judged_samples}.`,
-            asrClass(r.avg_asr)
-          ),
+  const defenseColumns = [
+    { label: "Rank", key: "rank", className: "mono" },
+    { label: "Defense", key: "defense" },
+    {
+      label: "Defended ASR",
+      html: true,
+      render: (r) =>
+        metricHint(
+          fmtPct(r.defended_asr ?? r.avg_asr),
+          `ASR of the defended endpoint over matched pairs. matched_pairs=${r.matched_pair_count}; judged_samples=${fmtInt(r.judged_samples)}.`,
+          asrClass(r.defended_asr ?? r.avg_asr)
+        ),
+    },
+    {
+      label: "Defense Gain",
+      html: true,
+      render: (r) => {
+        const value = r.gain ?? r.asr_gain_vs_no_defense;
+        return metricHint(fmtPp(value), `ASR gain = baseline(no_defense) - defense ASR. Positive is better.`, deltaClass(value));
       },
-      {
-        label: "ASR Gain vs no_defense",
-        html: true,
-        render: (r) => {
-          const cls = r.asr_gain_vs_no_defense === null ? "" : r.asr_gain_vs_no_defense >= 0 ? "good" : "bad";
-          return metricHint(
-            fmtPct(r.asr_gain_vs_no_defense),
-            `ASR gain = baseline(no_defense) - defense ASR. Positive is better.`,
-            cls
-          );
-        },
-      },
-      {
-        label: "Matched Pairs",
-        html: true,
-        render: (r) => metricHint(String(r.matched_pair_count), `Matched (model, attack, dataset, judger) pairs: ${r.matched_pair_count}.`, "mono"),
-      },
-      {
-        label: "Model Coverage",
-        html: true,
-        render: (r) => metricHint(String(r.model_coverage), `Unique models covered by this defense: ${r.model_coverage}.`, "mono"),
-      },
-      {
-        label: "Attack Coverage",
-        html: true,
-        render: (r) => metricHint(String(r.attack_coverage), `Unique attacks covered by this defense: ${r.attack_coverage}.`, "mono"),
-      },
-      {
-        label: "Judged Samples",
-        html: true,
-        render: (r) => metricHint(String(r.judged_samples), `Total judged samples contributing to this defense row.`, "mono"),
-      },
-    ],
-    data.leaderboards.defenses,
-    (row) => {
-      focusRunsByEntity("defense", row.defense);
-    }
-  );
+    },
+    {
+      label: "Backfire",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPct(r.defense_backfire), "Attacked-safe to defended-harmful transition on matched samples.", asrClass(r.defense_backfire)),
+    },
+    {
+      label: "Clean Backfire",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPct(r.clean_input_backfire), "Clean-safe to defended-harmful transition under no attack.", asrClass(r.clean_input_backfire)),
+    },
+    {
+      label: "Win / Worse",
+      html: true,
+      render: (r) => `${esc(fmtPct(r.win_rate, 0))} / <span class="${asrClass(r.worse_rate)}">${esc(fmtPct(r.worse_rate, 0))}</span>`,
+    },
+    {
+      label: "Utility ΔAcc",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPp(r.utility_accuracy_delta), `Benign-question accuracy change. utility_pairs=${r.utility_pairs || 0}.`, deltaClass(r.utility_accuracy_delta)),
+    },
+    {
+      label: "Utility ΔRefusal",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPp(r.utility_refusal_delta), `Benign-question refusal-rate change. Lower is better.`, deltaClass(r.utility_refusal_delta, false)),
+    },
+    {
+      label: "Matched Pairs",
+      html: true,
+      render: (r) => metricHint(String(r.matched_pair_count), `Matched (model, attack, dataset, judger) pairs: ${r.matched_pair_count}.`, "mono"),
+    },
+    {
+      label: "Coverage",
+      html: true,
+      render: (r) => metricHint(r.coverage || `${r.model_coverage}M/${r.attack_coverage}A`, `Models=${r.model_coverage}; attacks=${r.attack_coverage}.`, "mono"),
+    },
+    {
+      label: "Latency",
+      html: true,
+      render: (r) => metricHint(fmtSec(r.avg_latency_s), "Average defended endpoint latency."),
+    },
+  ];
 
-  renderTable(
-    "attackTable",
-    [
-      { label: "Rank", key: "rank", className: "mono" },
-      { label: "Attack", key: "attack" },
-      {
-        label: "Avg ASR",
-        html: true,
-        render: (r) =>
-          metricHint(
-            fmtPct(r.avg_asr),
-            `Attack-side ASR over runs. Higher means stronger jailbreak success. judged_samples=${r.judged_samples}.`,
-            asrClass(r.avg_asr)
-          ),
-      },
-      {
-        label: "Runs",
-        html: true,
-        render: (r) => metricHint(String(r.run_count), `Completed runs using this attack: ${r.run_count}.`, "mono"),
-      },
-      {
-        label: "Model Coverage",
-        html: true,
-        render: (r) => metricHint(String(r.model_coverage), `Unique models attacked: ${r.model_coverage}.`, "mono"),
-      },
-      {
-        label: "Defense Coverage",
-        html: true,
-        render: (r) => metricHint(String(r.defense_coverage), `Unique defenses paired with this attack: ${r.defense_coverage}.`, "mono"),
-      },
-      {
-        label: "Judged Samples",
-        html: true,
-        render: (r) => metricHint(String(r.judged_samples), `Total judged samples contributing to this attack row.`, "mono"),
-      },
-    ],
-    data.leaderboards.attacks,
-    (row) => {
-      focusRunsByEntity("attack", row.attack);
-    }
-  );
+  renderTable("defenseBlackBoxTable", defenseColumns, paper.defenses_by_access?.black_box || [], (row) => {
+    focusRunsByEntity("defense", row.defense);
+  });
+  renderTable("defenseWhiteBoxTable", defenseColumns, paper.defenses_by_access?.white_box || [], (row) => {
+    focusRunsByEntity("defense", row.defense);
+  });
+
+  const attackColumns = [
+    { label: "Rank", key: "rank", className: "mono" },
+    { label: "Attack", key: "attack" },
+    {
+      label: "Residual ASR",
+      html: true,
+      render: (r) =>
+        metricHint(
+          fmtPct(r.residual_defended_asr),
+          `ASR after defenses are integrated with the target model. defended_runs=${r.defended_run_count}.`,
+          asrClass(r.residual_defended_asr)
+        ),
+    },
+    {
+      label: "No-Def ASR",
+      html: true,
+      render: (r) =>
+        metricHint(fmtPct(r.no_defense_asr ?? r.avg_asr), `Undefended target-model ASR. runs=${r.run_count}.`, asrClass(r.no_defense_asr ?? r.avg_asr)),
+    },
+    {
+      label: "Retention",
+      html: true,
+      render: (r) => metricHint(fmtPct(r.asr_retention), "Residual defended ASR divided by no-defense ASR."),
+    },
+    {
+      label: "Induced",
+      html: true,
+      render: (r) =>
+        metricHint(
+          fmtPct(r.induced_harmfulness),
+          `Clean-safe to attacked-harmful transition. samples=${fmtInt(r.transition_samples)}.`,
+          asrClass(r.induced_harmfulness)
+        ),
+    },
+    {
+      label: "Suppression",
+      html: true,
+      render: (r) => metricHint(fmtPct(r.attack_suppression), "Clean-harmful to attacked-safe transition."),
+    },
+    {
+      label: "Spread",
+      html: true,
+      render: (r) => metricHint(fmtPp(r.model_spread), `Cross-model no-defense ASR range: ${fmtPct(r.min_model_asr)} to ${fmtPct(r.max_model_asr)}.`),
+    },
+    {
+      label: "Queries",
+      html: true,
+      render: (r) => metricHint(fmtFloat(r.avg_target_queries, 1), "Average target-model queries per sample.", "mono"),
+    },
+    {
+      label: "Assistant Refusal",
+      html: true,
+      render: (r) => metricHint(fmtPct(r.assistant_refusal_rate), `Samples with assistant-refusal instrumentation: ${fmtInt(r.assistant_refusal_samples)}.`),
+    },
+    {
+      label: "Coverage",
+      html: true,
+      render: (r) => metricHint(`${r.model_coverage}M/${r.defense_coverage}D`, `No-defense models=${r.model_coverage}; defended defense states=${r.defense_coverage}.`, "mono"),
+    },
+  ];
+
+  renderTable("attackBlackBoxTable", attackColumns, paper.attacks_by_access?.black_box || [], (row) => {
+    focusRunsByEntity("attack", row.attack);
+  });
+  renderTable("attackWhiteBoxTable", attackColumns, paper.attacks_by_access?.white_box || [], (row) => {
+    focusRunsByEntity("attack", row.attack);
+  });
 }
 
 async function init() {
@@ -1317,20 +1532,28 @@ async function init() {
     }
     const dataset = await response.json();
 
-    const sortedModelRows = sortByRobustnessDesc(dataset.leaderboards.models || []);
+    const paper = dataset.paper || {};
+    const sortedModelRows = [...(paper.models || [])].sort((a, b) => {
+      const av = a.no_defense_asr ?? a.avg_asr;
+      const bv = b.no_defense_asr ?? b.avg_asr;
+      if ((av === null || av === undefined) !== (bv === null || bv === undefined)) return av === null || av === undefined ? 1 : -1;
+      if (av !== bv) return av - bv;
+      return String(a.model || "").localeCompare(String(b.model || ""));
+    });
     setMeta(dataset.meta);
     runBreakdownModalApi = setupRunBreakdownModal();
     renderOverview(
       dataset.overview,
       sortedModelRows,
-      dataset.leaderboards.defenses,
-      dataset.leaderboards.attacks
+      paper.defenses || [],
+      paper.attacks || [],
+      paper
     );
     renderRunsSection(dataset);
     renderLeaderboards(dataset);
-    setModelJudgerNote(dataset?.filters?.judgers || []);
-    renderModelAttackMatrix(dataset.model_attack_matrix || dataset.matrix);
-    renderAttackDefenseMatrix(dataset.attack_defense_matrix);
+    setModelJudgerNote(paper?.policy?.primary_judger);
+    renderModelAttackMatrix(paper.model_attack_matrix || dataset.model_attack_matrix || dataset.matrix);
+    renderAttackDefenseMatrix(paper.attack_defense_matrix || dataset.attack_defense_matrix);
   } catch (err) {
     document.body.innerHTML = `<main class="page"><section class="section"><h2>Failed to load leaderboard</h2><pre>${esc(
       err?.stack || err
