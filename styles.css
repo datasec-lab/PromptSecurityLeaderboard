@@ -174,9 +174,11 @@ h3 {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  min-width: 0;
 }
 
 .card {
+  min-width: 0;
   border: 1px solid rgba(78, 197, 255, 0.2);
   border-radius: 14px;
   padding: 12px 14px;
@@ -426,12 +428,123 @@ h3 {
 
 .filters select,
 .filters input {
+  width: 100%;
+  min-width: 0;
   border: 1px solid #345571;
   background: #0f2438;
   color: var(--text);
   border-radius: 8px;
   padding: 8px 9px;
   font-family: "Space Grotesk", sans-serif;
+}
+
+#runsSection .filters {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+#runsSection .filters label:nth-child(1),
+#runsSection .filters label:nth-child(2),
+#runsSection .filters label:nth-child(3),
+#runsSection .filters label:nth-child(4) {
+  grid-column: span 3;
+}
+
+#runsSection .filters label:nth-child(5) {
+  grid-column: span 5;
+}
+
+#runsSection .filters label:nth-child(6) {
+  grid-column: span 7;
+}
+
+#runScopeCards.cards {
+  grid-template-columns: repeat(8, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+#runScopeCards .scope-card {
+  min-height: 96px;
+  padding: 14px 20px;
+}
+
+#runScopeCards .scope-card .value {
+  font-size: clamp(26px, 1.9vw, 36px);
+  line-height: 1.08;
+}
+
+#runScopeCards .scope-card-text .value {
+  font-size: clamp(21px, 1.45vw, 28px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+#runScopeBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+
+#runScopeBreakdown .scope-segment {
+  min-width: min(100%, 320px);
+  color: var(--muted);
+}
+
+#runScopeBreakdown strong {
+  color: #c8dceb;
+  font-weight: 600;
+}
+
+#runScopeBreakdown code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#runsTable {
+  table-layout: fixed;
+  min-width: 1320px;
+}
+
+#runsTable th,
+#runsTable td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#runsTable th:nth-child(1),
+#runsTable td:nth-child(1) {
+  width: 260px;
+}
+
+#runsTable th:nth-child(2),
+#runsTable td:nth-child(2),
+#runsTable th:nth-child(3),
+#runsTable td:nth-child(3) {
+  width: 190px;
+}
+
+#runsTable th:nth-child(4),
+#runsTable td:nth-child(4),
+#runsTable th:nth-child(5),
+#runsTable td:nth-child(5),
+#runsTable th:nth-child(7),
+#runsTable td:nth-child(7),
+#runsTable th:nth-child(9),
+#runsTable td:nth-child(9) {
+  width: 110px;
+}
+
+#runsTable th:nth-child(6),
+#runsTable td:nth-child(6) {
+  width: 150px;
+}
+
+#runsTable th:nth-child(8),
+#runsTable td:nth-child(8) {
+  width: 185px;
 }
 
 .detail {
@@ -735,6 +848,18 @@ body.modal-open {
     gap: 6px 10px;
   }
 
+  #runsSection .filters {
+    grid-template-columns: 1fr;
+  }
+
+  #runsSection .filters label:nth-child(n) {
+    grid-column: auto;
+  }
+
+  #runScopeCards.cards {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
   #trafficStatus {
     margin-left: 0;
     width: 100%;
@@ -748,5 +873,9 @@ body.modal-open {
 @media (min-width: 981px) and (max-width: 1240px) {
   #overviewCards.cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #runScopeCards.cards {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

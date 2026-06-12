@@ -1,4 +1,4 @@
-const DATA_URL = "./data/leaderboard.json?v=20260612-paper-clean-6";
+const DATA_URL = "./data/leaderboard.json?v=20260612-paper-clean-7";
 const TRAFFIC_REFRESH_MS = 30_000;
 const DEFAULT_JUDGER_KEY = "gpt_judger_harmful_binary";
 const JUDGER_LABELS = {
@@ -178,6 +178,15 @@ function fmtInt(value) {
 
 function judgerLabel(key) {
   return JUDGER_LABELS[key] || String(key || "N/A");
+}
+
+function judgerShortLabel(key) {
+  const known = {
+    harmbench_judger: "HarmBench",
+    gpt_judger_harmful_binary: "GPT-4.1 mini",
+    rejection_prefix_judger: "Prefix",
+  };
+  return known[key] || judgerLabel(key);
 }
 
 function setTrafficStatus(message, kind = "info") {
@@ -1050,13 +1059,14 @@ function buildRunScope(filteredRuns, judgerKey = DEFAULT_JUDGER_KEY) {
     completion,
     weightedAsr,
     judgerLabel: judgerLabel(judgerKey),
+    judgerKey,
   };
 }
 
 function renderRunScope(scope) {
   const cards = [
     { label: "Filtered Runs", value: scope.runCount },
-    { label: "Judger", value: scope.judgerLabel },
+    { label: "Judger", value: judgerShortLabel(scope.judgerKey), title: scope.judgerLabel, text: true },
     { label: "Weighted ASR", value: fmtPct(scope.weightedAsr) },
     { label: "Judged Samples", value: scope.judgedSamples.toLocaleString() },
     { label: "Sample Completion", value: fmtPct(scope.completion) },
@@ -1069,7 +1079,9 @@ function renderRunScope(scope) {
   cardsEl.innerHTML = cards
     .map(
       (c) =>
-        `<article class="card"><span class="label">${esc(c.label)}</span><span class="value">${esc(
+        `<article class="card scope-card${c.text ? " scope-card-text" : ""}"${
+          c.title ? ` title="${esc(c.title)}"` : ""
+        }><span class="label">${esc(c.label)}</span><span class="value">${esc(
           c.value
         )}</span></article>`
     )
@@ -1077,9 +1089,13 @@ function renderRunScope(scope) {
 
   const breakdown = document.getElementById("runScopeBreakdown");
   const top = (arr) => (arr.length <= 8 ? arr.join(", ") : `${arr.slice(0, 8).join(", ")} ... (+${arr.length - 8})`);
-  breakdown.innerHTML = `Models: <code>${esc(top(scope.modelSet) || "-")}</code> | Attacks: <code>${esc(
-    top(scope.attackSet) || "-"
-  )}</code> | Defenses: <code>${esc(top(scope.defenseSet) || "-")}</code>`;
+  breakdown.innerHTML = [
+    ["Models", top(scope.modelSet) || "-"],
+    ["Attacks", top(scope.attackSet) || "-"],
+    ["Defenses", top(scope.defenseSet) || "-"],
+  ]
+    .map(([label, value]) => `<span class="scope-segment"><strong>${esc(label)}:</strong> <code>${esc(value)}</code></span>`)
+    .join("");
 }
 
 async function loadRunPayload(run) {
@@ -1239,7 +1255,11 @@ function renderRunsSection(dataset) {
         },
         { label: "Total", key: "total_samples", className: "mono" },
         { label: "Dataset", key: "dataset" },
-        { label: "Judger", html: true, render: () => esc(judgerLabel(f.judger)) },
+        {
+          label: "Judger",
+          html: true,
+          render: () => `<span title="${esc(judgerLabel(f.judger))}">${esc(judgerShortLabel(f.judger))}</span>`,
+        },
         { label: "Updated", key: "updated_at", className: "mono" },
       ],
       filtered,
