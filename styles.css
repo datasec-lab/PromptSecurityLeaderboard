@@ -439,12 +439,16 @@ h3 {
 }
 
 #runsSection .filters {
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  align-items: end;
 }
 
 #runsSection .filters label:nth-child(1),
 #runsSection .filters label:nth-child(2),
-#runsSection .filters label:nth-child(3),
+#runsSection .filters label:nth-child(3) {
+  grid-column: span 4;
+}
+
 #runsSection .filters label:nth-child(4) {
   grid-column: span 3;
 }
@@ -454,26 +458,36 @@ h3 {
 }
 
 #runsSection .filters label:nth-child(6) {
-  grid-column: span 7;
+  grid-column: span 4;
+}
+
+#runsSection .filters select,
+#runsSection .filters input {
+  height: 48px;
+  font-size: 15px;
 }
 
 #runScopeCards.cards {
-  grid-template-columns: repeat(8, minmax(130px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
 }
 
 #runScopeCards .scope-card {
-  min-height: 96px;
-  padding: 14px 20px;
+  min-height: 78px;
+  padding: 12px 16px;
+}
+
+#runScopeCards .scope-card .label {
+  font-size: 10px;
 }
 
 #runScopeCards .scope-card .value {
-  font-size: clamp(26px, 1.9vw, 36px);
+  font-size: clamp(20px, 1.55vw, 28px);
   line-height: 1.08;
 }
 
 #runScopeCards .scope-card-text .value {
-  font-size: clamp(21px, 1.45vw, 28px);
+  font-size: clamp(18px, 1.2vw, 22px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -876,6 +890,18 @@ body.modal-open {
   }
 
   #runScopeCards.cards {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  #runScopeCards .scope-card {
+    padding: 10px 12px;
+  }
+
+  #runScopeCards .scope-card .value {
+    font-size: 20px;
+  }
+
+  #runScopeCards .scope-card-text .value {
+    font-size: 17px;
   }
 }

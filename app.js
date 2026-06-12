@@ -1,4 +1,4 @@
-const DATA_URL = "./data/leaderboard.json?v=20260612-paper-clean-7";
+const DATA_URL = "./data/leaderboard.json?v=20260612-paper-clean-8";
 const TRAFFIC_REFRESH_MS = 30_000;
 const DEFAULT_JUDGER_KEY = "gpt_judger_harmful_binary";
 const JUDGER_LABELS = {
@@ -1069,7 +1069,6 @@ function renderRunScope(scope) {
     { label: "Judger", value: judgerShortLabel(scope.judgerKey), title: scope.judgerLabel, text: true },
     { label: "Weighted ASR", value: fmtPct(scope.weightedAsr) },
     { label: "Judged Samples", value: scope.judgedSamples.toLocaleString() },
-    { label: "Sample Completion", value: fmtPct(scope.completion) },
     { label: "Models", value: scope.modelSet.length },
     { label: "Attacks", value: scope.attackSet.length },
     { label: "Defenses", value: scope.defenseSet.length },
