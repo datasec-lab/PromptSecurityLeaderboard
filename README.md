@@ -1,6 +1,19 @@
-# Leaderboard Site
+# PromptSecurity Leaderboard
 
-Static leaderboard for completed PromptSecurityEval experiments.
+Static leaderboard for completed PromptSecurity experiments.
+
+Live site:
+
+`https://datasec-lab.github.io/PromptSecurityLeaderboard/`
+
+## Make a Contribution
+
+The public page includes a contribution section with links to:
+
+- PromptSecurity code and evaluation data: `https://github.com/datasec-lab/PromptSecurity`
+- Issue submissions: `https://github.com/datasec-lab/PromptSecurity/issues`
+- Pull requests: `https://github.com/datasec-lab/PromptSecurity/pulls`
+- This leaderboard site: `https://github.com/datasec-lab/PromptSecurityLeaderboard`
 
 ## 1) Build data
 
